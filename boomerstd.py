@@ -9,6 +9,7 @@
 import random
 import logging
 from collections import Counter
+import math
 
 from messages import Upload, Request
 from util import even_split
@@ -73,6 +74,7 @@ class BoomerStd(Peer):
         requests = []   # We'll put all the things we want here
         # Symmetry breaking is good...
         random.shuffle(needed_pieces)
+        peers.sort(key=lambda p: p.id)
         
         # Sort peers by id.  This is probably not a useful sort, but other 
         # sorts might be useful
@@ -110,6 +112,7 @@ class BoomerStd(Peer):
         return requests
 
     def uploads(self, requests, peers, history):
+        #logging.debug("Requests: %s" % requests)
         """
         requests -- a list of the requests for this peer for this round
         peers -- available info about all the peers
@@ -171,30 +174,49 @@ class BoomerStd(Peer):
             # change my internal state for no reason
             self.dummy_state["cake"] = "pie"
 
-            usedbw = 0
-            if round % 2 == 0:
-                usedbw = 1
 
             #logging.debug("Priority: %s" % priority)
             #logging.debug("Requests: %s" % requests)
-            
+            slotsLeft = 4
+            upLeft = self.up_bw
+
+            if round % 2 == 0:
+                slotsLeft = slotsLeft - 1
+                upLeft = self.up_bw - math.ceil(self.up_bw/4)
+
+                
             for p in priority:
                 for r in requests:
                     if p[0] == r.requester_id:
-                        uploads.append(Upload(self.id, p[0],1))
-                        usedbw = usedbw + 1
-                    if usedbw >= self.up_bw:
+                        uploads.append(Upload(self.id, p[0],math.ceil(upLeft/slotsLeft)))
+                        upLeft = upLeft - math.ceil(upLeft/slotsLeft)
+                        slotsLeft = slotsLeft - 1
+                    if slotsLeft <= 0:
                         break
-                if usedbw >= self.up_bw:
+                if slotsLeft <= 0:
                     break
 
-            if usedbw < self.up_bw:
+            if slotsLeft > 0:
                 for r in requests:
                     if not (any(r.requester_id in i for i in priority)):
-                        uploads.append(Upload(self.id, r.requester_id,1))
-                        usedbw = usedbw + 1
-                    if usedbw >= self.up_bw:
+                        uploads.append(Upload(self.id, r.requester_id,math.ceil(upLeft/slotsLeft)))
+                        upLeft = upLeft - math.ceil(upLeft/slotsLeft)
+                        slotsLeft = slotsLeft - 1
+                    if slotsLeft <= 0:
                         break
+
+
+            #!!! use up remaining upload bandwidth
+
+            #while usedbw < self.up_bw:
+            #    for u in range(len(uploads)):
+            #        uploads[u] = Upload(uploads[u].from_id,uploads[u].to_id,uploads[u].bw +1)
+            #        usedbw = usedbw + 1
+            #        if usedbw >= self.up_bw:
+            #            break
+
+            #logging.debug("Uploads: %s" % uploads)
+                    
             #!!! upload to highest contributors
 
             #!!! for every other round, pick random peer to upload to
@@ -209,7 +231,7 @@ class BoomerStd(Peer):
                             found = True
                             break
                     if found == False:
-                        uploads.append(Upload(self.id, r.requester_id,1))
+                        uploads.append(Upload(self.id, r.requester_id,math.ceil(self.up_bw/4)))
                         break
 
             #request = random.choice(requests)
@@ -223,5 +245,5 @@ class BoomerStd(Peer):
         #           for (peer_id, bw) in zip(chosen, bws)]
 
         #logging.debug("Uploads: %s" % uploads)
-            
+        
         return uploads
