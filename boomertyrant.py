@@ -20,7 +20,7 @@ class BoomerTyrant(Peer):
         self.peer_ratios = dict()
         self.gamma = .1
         self.r = 3
-        self.alpha = .2
+        self.alpha = .3
     
     def requests(self, peers, history):
         """
@@ -36,42 +36,61 @@ class BoomerTyrant(Peer):
         np_set = set(needed_pieces)  # sets support fast intersection ops.
 
 
-        logging.debug("%s here: still need pieces %s" % (
-            self.id, needed_pieces))
-
-        logging.debug("%s still here. Here are some peers:" % self.id)
-        for p in peers:
-            logging.debug("id: %s, available pieces: %s" % (p.id, p.available_pieces))
-
-        # logging.debug("And look, I have my entire history available too:")
-        # logging.debug("look at the AgentHistory class in history.py for details")
-        # logging.debug(str(history))
-
-        requests = []   # We'll put all the things we want here
-        # Symmetry breaking is good...
-        random.shuffle(needed_pieces)
+        requests = []
         
-        # Sort peers by id.  This is probably not a useful sort, but other 
-        # sorts might be useful
-        peers.sort(key=lambda p: p.id)
-        # request all available pieces from all peers!
-        # (up to self.max_requests from each)
+        random.shuffle(needed_pieces)
+
+
+        # records the total number of each piece
+        total_piece_count = dict()
+
+        # record which pieces are available from each peer
+        for peer in peers:
+            av_set = set(peer.available_pieces)
+            for piece in av_set:
+                # add piece to dictionary if not already present
+                if piece not in total_piece_count.keys():
+                    total_piece_count[piece] = [1, [peer.id]]
+                else:
+                # add to total piece count, and record that this peer has it
+                    total_piece_count[piece][0] += 1
+                    total_piece_count[piece][1].append(peer.id)
+
+        # requests all available pieces from all peers
         for peer in peers:
             av_set = set(peer.available_pieces)
             isect = av_set.intersection(np_set)
             n = min(self.max_requests, len(isect))
-            # More symmetry breaking -- ask for random pieces.
-            # This would be the place to try fancier piece-requesting strategies
-            # to avoid getting the same thing from multiple peers at a time.
-            for piece_id in random.sample(isect, n):
-                # aha! The peer has this piece! Request it.
-                # which part of the piece do we need next?
-                # (must get the next-needed blocks in order)
-                start_block = self.pieces[piece_id]
-                r = Request(self.id, peer.id, piece_id, start_block)
-                requests.append(r)
+
+            # request all available pieces if possible
+            if self.max_requests >= len(isect):
+                for piece in isect:
+                    start_block = self.pieces[piece]
+                    r = Request(self.id, peer.id, piece, start_block)
+                    requests.append(r)
+
+            # if available pieces exceed max_requests, sort by rarity
+            else:
+                # make a list of pieces and rarity from dictionary
+                piece_rarity = []
+                for piece in isect:
+                    piece_rarity.append((total_piece_count[piece][0], piece))
+
+                # randomize so peers don't have the same priority for equally rare pieces
+                random.shuffle(piece_rarity)
+                # sort from rarest to most common
+                piece_rarity.sort(key = lambda x: x[0])
+                # get n rarest pieces and then shuffle for symmetry breaking
+                pieces = [x[1] for x in piece_rarity[:n]]
+                random.shuffle(pieces)
+
+                for piece in pieces:
+                    start_block = self.pieces[piece]
+                    r = Request(self.id, peer.id, piece, start_block)
+                    requests.append(r)
 
         logging.debug("\nrequests for {}:\n{}\n".format(self.id, requests))
+
         return requests
 
     def uploads(self, requests, peers, history):
@@ -131,7 +150,7 @@ class BoomerTyrant(Peer):
                             unchoked = False
                             break
                     if unchoked:
-                        peer_dict['u'] = peer_dict['u'] * (1-self.alpha)
+                        peer_dict['u'] = peer_dict['u'] * (1-self.gamma)
 
         logging.debug("\npeer_ratios for {}:\n{}\n".format(self.id, self.peer_ratios))
 
@@ -144,14 +163,20 @@ class BoomerTyrant(Peer):
             # change my internal state for no reason
             # self.dummy_state["cake"] = "pie"
 
+            peers_who_want_my_stuff = set()
+            for request in requests:
+                peers_who_want_my_stuff.add(request.requester_id)
+
             bw_left = self.up_bw
             upload_to = sorted([(peer_id, d['d']/d['u'], d['u']) for peer_id, d in self.peer_ratios.items()], key=lambda p:p[1], reverse=True)
             for peer_id, ratio, bw in upload_to:
-                if (bw_left - bw) < 0 or 'Seed' in peer_id:
+                if bw_left <= 0:
+                    break
+                if peer_id not in peers_who_want_my_stuff:
                     continue
                 chosen.append(peer_id)
-                bws.append(bw)
-                bw_left -= bw
+                bws.append(min(bw_left, math.floor(bw)))
+                bw_left -= min(bw_left, math.floor(bw))
 
             logging.debug("\npriorities for {}:\n{}".format(self.id, upload_to))
 
