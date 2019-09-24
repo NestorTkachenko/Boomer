@@ -141,29 +141,21 @@ class BoomerStd(Peer):
 
 
                 # sort from highest upload contribution to least, and take top 3 requesters
+                # leave one slot open every third round for optimistic unchoking
                 requesters_upload.sort(key = lambda x:x[0], reverse=True)
-                chosen = [x[1] for x in requesters_upload[:slots-2]]
-
-                #logging.debug("Uploads: %s" % uploads)
-                #!!! UNCHOKE 3 EVERY 3 MOVES, 4 OTHERWISE^^
+                if round%3 != 0:
+                    chosen = [x[1] for x in requesters_upload[:slots-1]]
+                else:
+                    chosen = [x[1] for x in requesters_upload[:slots]]
                 
-
                 # get rid of chosen requests from request list
-                for request in requests:
-                    if request.requester_id in chosen:
-                        requests.remove(request)
-
-                
+                new_requests = [x for x in requests if not x.requester_id in chosen]
+                requests = new_requests                
 
                 # optimistic unchoke every 3 turns
                 if round%3 != 0:
                     if len(requests) > 0:
                         # optimistically unchoke random request
-                        random_request = random.choice(requests)
-                        chosen.append(random_request.requester_id)
-                        requests.remove(random_request)
-                else:
-                    if len(requests) > 0:
                         random_request = random.choice(requests)
                         chosen.append(random_request.requester_id)
                         requests.remove(random_request)
@@ -173,6 +165,8 @@ class BoomerStd(Peer):
                     random_request = random.choice(requests)
                     chosen.append(random_request.requester_id)
                     requests.remove(random_request)
+
+                
                     
 
             bws = even_split(self.up_bw, len(chosen))
