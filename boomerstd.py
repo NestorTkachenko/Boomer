@@ -25,9 +25,7 @@ class BoomerStd(Peer):
         """
         peers: available info about the peers (who has what pieces)
         history: what's happened so far as far as this peer can see
-
         returns: a list of Request() objects
-
         This will be called after update_pieces() with the most recent state.
         """
         needed = lambda i: self.pieces[i] < self.conf.blocks_per_piece
@@ -35,215 +33,152 @@ class BoomerStd(Peer):
         np_set = set(needed_pieces)  # sets support fast intersection ops.
 
 
-        #logging.debug("%s here: still need pieces %s" % (
-        #    self.id, needed_pieces))
-
-        #logging.debug("%s still here. Here are some peers:" % self.id)
-        #for p in peers:
-        #    logging.debug("id: %s, available pieces: %s" % (p.id, p.available_pieces))
-
-
-        #!!!find rarest piece
-        pieceList = []
-        rareList = []
-        for p in peers:
-            pieceList = pieceList + list(p.available_pieces)
-
-        least = Counter( pieceList ).most_common()[::-1]
-
-        #logging.debug("least: %s" % least)
-
-        lowestFrequency = least[0][1]
-        for i in least:
-            if i[1] == lowestFrequency:
-                rareList.append(i[0])
-            else:
-                break
-
-        #!!!rareList contains the rarest pieces, and least is pieces sorted rarest first
-            
-        #logging.debug("Rarest Pieces: %s" % rareList)
-
-
+        requests = []
         
-
-        #logging.debug("And look, I have my entire history available too:")
-        #logging.debug("look at the AgentHistory class in history.py for details")
-        #logging.debug(str(history))
-
-        requests = []   # We'll put all the things we want here
-        # Symmetry breaking is good...
         random.shuffle(needed_pieces)
-        peers.sort(key=lambda p: p.id)
-        
-        # Sort peers by id.  This is probably not a useful sort, but other 
-        # sorts might be useful
 
-        #!!!Sorts peers, with the ones with the most rarest pieces coming first
-        #peers.sort(key=lambda p: len(p.available_pieces & set(rareList)), reverse = True)
-             
-        # request all available pieces from all peers!
-        # (up to self.max_requests from each)
+
+        # records the total number of each piece
+        total_piece_count = dict()
+
+        # record which pieces are available from each peer
+        for peer in peers:
+            av_set = set(peer.available_pieces)
+            for piece in av_set:
+                # add piece to dictionary if not already present
+                if piece not in total_piece_count.keys():
+                    total_piece_count[piece] = [1, [peer.id]]
+                else:
+                # add to total piece count, and record that this peer has it
+                    total_piece_count[piece][0] += 1
+                    total_piece_count[piece][1].append(peer.id)
+
+        # requests all available pieces from all peers
         for peer in peers:
             av_set = set(peer.available_pieces)
             isect = av_set.intersection(np_set)
             n = min(self.max_requests, len(isect))
 
-            #logging.debug("Intersection: %s" % isect)            
-            # More symmetry breaking -- ask for random pieces.
-            # This would be the place to try fancier piece-requesting strategies
-            # to avoid getting the same thing from multiple peers at a time.
-
-            #!!!Here we go through the rarest pieces and request the ones we need
-            
-            
-
-            for p in least:
-                num = 0
-                if p[0] in isect:
-                    start_block = self.pieces[p[0]]
-                    r = Request(self.id, peer.id, p[0], start_block)
+            # request all available pieces if possible
+            if self.max_requests >= len(isect):
+                for piece in isect:
+                    start_block = self.pieces[piece]
+                    r = Request(self.id, peer.id, piece, start_block)
                     requests.append(r)
-                    num = num + 1
-                if num >= n:
-                    break
-            
-        #logging.debug("Requests: %s" % requests)
+
+            # if available pieces exceed max_requests, sort by rarity
+            else:
+                # make a list of pieces and rarity from dictionary
+                piece_rarity = []
+                for piece in isect:
+                    piece_rarity.append((total_piece_count[piece][0], piece))
+
+                # randomize so peers don't have the same priority for equally rare pieces
+                random.shuffle(piece_rarity)
+                # sort from rarest to most common
+                piece_rarity.sort(key = lambda x: x[0])
+                # get n rarest pieces and then shuffle for symmetry breaking
+                pieces = [x[1] for x in piece_rarity[:n]]
+                random.shuffle(pieces)
+
+                for piece in pieces:
+                    start_block = self.pieces[piece]
+                    r = Request(self.id, peer.id, piece, start_block)
+                    requests.append(r)
         return requests
 
     def uploads(self, requests, peers, history):
-        #logging.debug("Requests: %s" % requests)
-        """
-        requests -- a list of the requests for this peer for this round
-        peers -- available info about all the peers
-        history -- history for all previous rounds
 
-        returns: list of Upload objects.
-
-        In each round, this will be called after requests().
-        """
-
-        #logging.debug("History: %s" % str(history.downloads))
-
+        slots = 4
         round = history.current_round()
-        #logging.debug("%s again.  It's round %d." % (
-        #    self.id, round))
-        # One could look at other stuff in the history too here.
-        # For example, history.downloads[round-1] (if round != 0, of course)
-        # has a list of Download objects for each Download to this peer in
-        # the previous round.
 
-        #!!!Make priority order for peers based on download contribution last 2 turns
-        priority = []
-        if round > 0:
-            for d in history.downloads[round-1]:
-                if not (any(d.from_id in i for i in priority)):
-                    #logging.debug("Added to priority: %s" % d.from_id)
-                    priority.append((d.from_id,d.blocks))
+
+        if round >= 2:
+            # get download histories of previous rounds
+            dl_history1 = history.downloads[round-1]
+            dl_history2 = history.downloads[round-2]
+            dl_history = dict()
+
+            # fill in dictionary with how many blocks each peer has contributed last 2 turns
+            for down in dl_history1:
+                source_id = down.from_id
+                if source_id not in dl_history.keys():
+                    dl_history[source_id] = down.blocks
                 else:
-                    for t in range(len(priority)):
-                        if priority[t][0] == d.from_id:
-                            priority[t] = (priority[t][0],priority[t][1] + d.blocks)
-                    #logging.debug("Added priority pts: %s" % d.from_id)
+                    dl_history[source_id] += down.blocks
 
-        if round > 1:
-            for d in history.downloads[round-2]:
-                if not (any(d.from_id in i for i in priority)):
-                    #logging.debug("Added to priority: %s" % d.from_id)
-                    priority.append((d.from_id,d.blocks))
+            for down in dl_history2:
+                source_id = down.from_id
+                if source_id not in dl_history.keys():
+                    dl_history[source_id] = down.blocks
                 else:
-                    for t in range(len(priority)):
-                        if priority[t][0] == d.from_id:
-                            priority[t] = (priority[t][0],priority[t][1] + d.blocks)
-                    #logging.debug("Added priority pts: %s" % d.from_id)
+                    dl_history[source_id] += down.blocks
 
-        priority.sort(key=lambda p: p[1], reverse = True)
-        #!!!priority ranks the highest contributors in order
-        
-        #logging.debug("Priority List: %s" % priority)
-        
-        
-        uploads = []
-        
         if len(requests) == 0:
             #logging.debug("No one wants my pieces!")
             chosen = []
             bws = []
+
         else:
-            #logging.debug("Still here: uploading to a random peer")
-            # change my internal state for no reason
-            self.dummy_state["cake"] = "pie"
+            if round >= 2:
+                # rank received requests by upload contribution
+                all_requesters = []
+                requesters_upload = []
+                chosen = []
+
+                # make list of all peers making requests
+                for request in requests:
+                    request_id = request.requester_id
+                    if request_id not in all_requesters:
+                        all_requesters.append(request_id)
+
+                # make list of how much each peer requested
+                for requester in all_requesters:
+                    if requester not in dl_history.keys():
+                        requesters_upload.append((0, requester))
+                    else:
+                        requesters_upload.append((dl_history[requester], requester))
 
 
-            #logging.debug("Priority: %s" % priority)
-            #logging.debug("Requests: %s" % requests)
-            slotsLeft = 4
-            upLeft = self.up_bw
+                # sort from highest upload contribution to least, and take top 3 requesters
+                requesters_upload.sort(key = lambda x:x[0], reverse=True)
+                chosen = [x[1] for x in requesters_upload[:slots-2]]
 
-            if round % 2 == 0:
-                slotsLeft = slotsLeft - 1
-                upLeft = self.up_bw - math.ceil(self.up_bw/4)
+                #logging.debug("Uploads: %s" % uploads)
+                #!!! UNCHOKE 3 EVERY 3 MOVES, 4 OTHERWISE^^
+                
+
+                # get rid of chosen requests from request list
+                for request in requests:
+                    if request.requester_id in chosen:
+                        requests.remove(request)
 
                 
-            for p in priority:
-                for r in requests:
-                    if p[0] == r.requester_id:
-                        uploads.append(Upload(self.id, p[0],math.ceil(upLeft/slotsLeft)))
-                        upLeft = upLeft - math.ceil(upLeft/slotsLeft)
-                        slotsLeft = slotsLeft - 1
-                    if slotsLeft <= 0:
-                        break
-                if slotsLeft <= 0:
-                    break
 
-            if slotsLeft > 0:
-                for r in requests:
-                    if not (any(r.requester_id in i for i in priority)):
-                        uploads.append(Upload(self.id, r.requester_id,math.ceil(upLeft/slotsLeft)))
-                        upLeft = upLeft - math.ceil(upLeft/slotsLeft)
-                        slotsLeft = slotsLeft - 1
-                    if slotsLeft <= 0:
-                        break
+                # optimistic unchoke every 3 turns
+                if round%3 != 0:
+                    if len(requests) > 0:
+                        # optimistically unchoke random request
+                        random_request = random.choice(requests)
+                        chosen.append(random_request.requester_id)
+                        requests.remove(random_request)
+                else:
+                    if len(requests) > 0:
+                        random_request = random.choice(requests)
+                        chosen.append(random_request.requester_id)
+                        requests.remove(random_request)
 
-
-            #!!! use up remaining upload bandwidth
-
-            #while usedbw < self.up_bw:
-            #    for u in range(len(uploads)):
-            #        uploads[u] = Upload(uploads[u].from_id,uploads[u].to_id,uploads[u].bw +1)
-            #        usedbw = usedbw + 1
-            #        if usedbw >= self.up_bw:
-            #            break
-
-            #logging.debug("Uploads: %s" % uploads)
+                # fill remaining spots with random requests
+                while len(chosen) < slots and len(requests) > 0:
+                    random_request = random.choice(requests)
+                    chosen.append(random_request.requester_id)
+                    requests.remove(random_request)
                     
-            #!!! upload to highest contributors
 
-            #!!! for every other round, pick random peer to upload to
-            #!!! optimistic unchoking
-
-            random.shuffle(requests)
-            if round % 2 == 0:
-                for r in requests:
-                    found = False
-                    for u in uploads:
-                        if u.to_id == r.requester_id:
-                            found = True
-                            break
-                    if found == False:
-                        uploads.append(Upload(self.id, r.requester_id,math.ceil(self.up_bw/4)))
-                        break
-
-            #request = random.choice(requests)
-            #chosen = [request.requester_id]
-            # Evenly "split" my upload bandwidth among the one chosen requester
-            #bws = even_split(self.up_bw, len(chosen))
-            
-
+            bws = even_split(self.up_bw, len(chosen))
         # create actual uploads out of the list of peer ids and bandwidths
-        #uploads = [Upload(self.id, peer_id, bw)
-        #           for (peer_id, bw) in zip(chosen, bws)]
+        uploads = [Upload(self.id, peer_id, bw)
+                   for (peer_id, bw) in zip(chosen, bws)]
 
-        #logging.debug("Uploads: %s" % uploads)
-        
+
         return uploads
