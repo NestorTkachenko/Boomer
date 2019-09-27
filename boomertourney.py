@@ -84,7 +84,61 @@ class BoomerTourney(Peer):
         slots = 4
         round = history.current_round()
 
+        requesters_ranked = []
 
+        needed = lambda i: self.pieces[i] < self.conf.blocks_per_piece
+        needed_pieces = filter(needed, range(len(self.pieces)))
+        np_set = set(needed_pieces)
+
+        # After finishing all pieces, feed the peers with the least pieces blocks
+        # This way other good algorithms will rank lower :)
+
+        # Stop uploading here so other peers do worse
+        
+        if len(needed_pieces) == 0:
+            chosen = []
+            bws = []
+                
+            uploads = [Upload(self.id, peer_id, bw)
+                   for (peer_id, bw) in zip(chosen, bws)]
+
+            return uploads
+
+        random.shuffle(peers)
+
+        for peer in peers:
+            av_set = set(peer.available_pieces)
+            isect = list(av_set.intersection(np_set))
+            requesters_ranked.append([peer.id,len(isect)])
+
+        # ranks peers in order of most overlap pieces to least
+            
+        requesters_ranked.sort(key = lambda x: x[1], reverse = True)
+
+        all_requesters = []
+        requesters_upload = []
+        chosen = []
+
+        # make list of all peers making requests
+        for request in requests:
+            request_id = request.requester_id
+            if request_id not in all_requesters:
+                all_requesters.append(request_id)
+
+                    
+        #fulfill requests in order of how many pieces they have that we need
+            
+        final_requesters = []
+            
+        for requester in requesters_ranked:
+            if requester[0] in all_requesters:
+                final_requesters.append(requester[0])
+
+            
+        approved = []
+
+        #END PASTE
+        
         if round >= 2:
             # get download histories of previous rounds
             dl_history1 = history.downloads[round-1]
